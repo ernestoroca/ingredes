@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Ethernet</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+<div id="log"></div>
+<script>
+//tarea
+/*
+  tareaIn = {
+    tipo:'ping',
+    destino:ipDestino,
+    
+    tiempo:1000,//timeout
+    ptoorg:3434,
+  };
+  tareaIn = {
+    tipo:'upload',
+    destino:ipDestino,
+    tamano:tamanoArchivo,
+    
+    tiempo:1000,//timeout
+    ptoorg:3434,
+  }
+  tareaIn = {
+    tipo:'download',
+    destino:ipDestino,
+    tamano:tamanoArchivo,
+    
+    tiempo:1000,//timeout
+    ptoorg:3434,
+  }
+  tareaIn = {
+    tipo:'voip',
+    destino:ipDestino,
+    
+    tiempo:1000,
+    ptoorg:3434,
+  }
+*/
+
+  
+//trama
+/*
+var trama = {
+  dirorg:123,
+  dirdst:34232,
+  datlng:1000,
+  tmstmp:0,
+  
+  ptoorg:123,
+  ptodst:34232,
+};
+  */
+
+"use strict"
+
+function SwitchEthernet(vecVel,vecTam){
+  var self=this;
+  var puertos,mactable;
+  
+  this.conectar =function(ptorg,equipo,ptdes){
+    puertos[ptorg].conectar(equipo,ptdes);
+    equipo.reconectar(ptdes,self,ptorg);
+  };
+  
+  this.reconectar =function(ptorg,equipo,ptdes){
+    puertos[ptorg].conectar(equipo,ptdes);
+  };
+  
+  this.push = function(pqt,pto){
+    //determina si la direccion origen ya esta registrada
+    //para registrarla, en caso negativo
+    //o actualuzarla en caso que ya este
+    var pos = mactable.direccion.indexOf(pqt.dirorg);
+    if (pos<0){
+      mactable.direccion.push(pqt.dirorg);
+      mactable.puerto.push(pto);
+    } else {
+      mactable.puerto[pos]=pto;
+    }
+    
+    //determina si la direccion destino ya esta registrada
+    //para enviar directo o broadcast
+    //si no es la misma de entrada
+    var nroPto,tam,res;
+    pos = mactable.direccion.indexOf(pqt.dirdst);
+    if (pos>=0){
+      //la mac esta registrada
+      nroPto = mactable.puerto[pos];
+      if (nroPto!=pto){
+        puertos[nroPto].encolar(pqt);
+      }
+    } else {
+      //broadcast
+      for(nroPto=0;nroPto<8;nroPto++){
+        if (nroPto!=pto){
+          puertos[nroPto].encolar(pqt);
+        }
+      }
+    }
+  };
+  
+  this.getStat = function(){
+    var res = [];
+    var i;
+    for (i=0;i<8;i++){
+      res[i] = puertos[i].getStat();
+    }
+    return res;
+  }
+  
+  function iniciar(){
+    var i;
+    puertos=[];
+    for(i=0;i<8;i++){
+      puertos[i] = new Puerto(vecVel[i],vecTam[i]);
+    }
+    mactable={
+      direccion:[],
+      puerto:[],
+    };
+  }
+  iniciar();
+}
+
+function PC(dir,vel,tam){
+  var self = this;
+  var direccion = dir;//ethernet
+  var tareas; //cola de tareas que se le pide al PC que realice
+  var puerto; //el puerto de salida
+  var server; //el server que responde
+  
+  this.conectar = function(equipo,ptdes){
+    puerto.conectar(equipo,ptdes);
+    equipo.reconectar(ptdes,self,0);
+  };
+  
+  this.reconectar = function(equipo,ptdes){
+    puerto.conectar(equipo,ptdes);
+  };
+  
+  this.setTarea = function(_tipo,_destino,_tamano){
+    var lng = tareas.length;
+    var nvaTarea = new Tarea(_tipo,direccion,_destino,lng,_tamano,puerto);
+    tareas.push(nvaTarea);
+  };
+
+  this.push = function(pqt,pto){
+    if(pqt.ptodst<0){//es una solicitud de un cliente al otro extremo, respondida por el server local
+      server.push(pqt);
+    } else { //es un acknoledge hacia el cliente local
+      tareas[pqt.ptodst].ack(pqt);
+    }
+  };
+  
+  this.getStat = function(){
+    return puerto.getStat();
+  };
+
+  function iniciar(){
+    puerto = new Puerto(vel,tam);
+    server = new Server(puerto);
+    tareas = [];
+  }
+  iniciar();
+}
+
+function Puerto(vel,tam){
+  var velocidad = vel/8;
+  var tamano = tam;
+  var equipo = null;//al que esta conectado al otro extremo
+  var ptodst; //al puerto fisico que esta conectado al otro extremo
+  var cola = [];
+  var trafico = 0; // el trafico que logro traficar
+  
+  function longitudCola(){
+    var lng = cola.length;
+    var tam = 0;
+    for (var i=0;i<lng;i++){
+      tam += cola[i].datlng;
+    }
+    return tam;
+  }
+  
+  function enviar(){
+    var pqt = cola[0];
+    trafico += pqt.datlng;
+    equipo.push(pqt,ptodst);
+    cola.shift();
+    if (cola.length>0){
+      setTimeout(function(){enviar();},1000*cola[0].datlng/velocidad);
+    }
+  }
+  
+  this.conectar = function(equ,ptdes){
+    equipo=equ;
+    ptodst=ptdes;
+  };
+  
+  this.encolar = function(pqt){
+    if (equipo==null){
+      return false;
+    }
+    var tam = longitudCola();
+    if (tam + pqt.datlng <= tamano){
+      //la cola no esta llena
+      cola.push(pqt);
+      if (cola.length==1){
+        var delta = 1000*pqt.datlng/velocidad;
+        setTimeout(function(){enviar();},1000*pqt.datlng/velocidad);
+      }
+      return true;
+    } else {
+      return false;
+    }
+  };
+  
+  this.getStat = function(){
+    var datos = [];
+    datos[0] = trafico;
+    trafico = 0;
+    datos[1] = longitudCola();
+    return datos;
+  }
+}
+
+function Server(pto){
+  var puerto = pto;//f�sico donde esta conectado
+  
+  this.push = function(pqt){
+    var d = new Date();
+    var nvoPqt = {
+      dirdst:pqt.dirorg,
+      dirorg:pqt.dirdst,
+      ptoorg:pqt.ptodst,
+      ptodst:pqt.ptoorg,
+      tmstmp:d.getTime(),
+    };
+    switch(pqt.ptodst){
+      case -1://ping
+        nvoPqt.datlng=pqt.datlng;
+        nvoPqt.tmstmp=pqt.tmstmp;
+        break;
+      case -2://upload
+        nvoPqt.datlng=32;
+        break;
+      case -3://download
+        nvoPqt.datlng=1000;
+        break;
+      default:
+        nvoPqt=null;
+        break;
+    }
+    if (nvoPqt!==null){
+      puerto.encolar(nvoPqt);
+    }
+  };
+}
+
+function Tarea(_tipo,_origen,_destino,_ptorg,_tamano,_puerto){
+  var tipo = _tipo;// si es ping u otro proceso, define el puerto 4 destino que es negativo
+  var destino = _destino; //ethernet destino
+  var origen = _origen; //ethernet origen
+  var ptorg = _ptorg; //puerto capa 4 origen
+  var puerto = _puerto; // puerto fisico de salida
+  var tamano = _tamano; //tamanho del archivo a ser enviado
+  var tmrEnviar = null;
+  
+  this.ack = function(pqt){
+    var d = new Date();
+    switch(tipo){
+      case 'ping':
+        var delta = (d.getTime()-pqt.tmstmp);
+        if (delta>=1000){
+          enviar(false);
+        } else {
+          if (tmrEnviar) {
+            clearTimeout(tmrEnviar);
+          }
+          tmrEnviar = setTimeout(function(){enviar(false);},1000-delta);
+        }
+        break;
+      case 'upload':
+      case 'download':
+        tamano-=1000;
+        if (tamano>0){
+          enviar(false);
+        }
+        break;
+    }
+  };
+
+  function enviar(timeout){
+    var tiempo; //de timeout
+    
+    if (tmrEnviar) {
+      clearTimeout(tmrEnviar);
+    }
+    var d = new Date();
+    var nvoPqt = {
+      dirorg:origen,
+      dirdst:destino,
+      tmstmp:d.getTime(),
+      ptoorg:ptorg,
+    };
+    switch(tipo){
+      case 'ping':
+        nvoPqt.datlng=tamano;
+        nvoPqt.ptodst=-1;
+        tiempo = 5000;
+        break;
+      case 'upload':
+        nvoPqt.datlng=1000;
+        nvoPqt.ptodst=-2;
+        tiempo = 3000;
+        break;
+      case 'download':
+        nvoPqt.datlng=32;
+        nvoPqt.ptodst=-3;
+        tiempo = 3000;
+        break;
+      case 'voip':
+        nvoPqt.datlng=200;
+        nvoPqt.ptodst=-4;
+        tiempo = 20;
+        break;
+    }
+    puerto.encolar(nvoPqt);
+    tmrEnviar = setTimeout(function(){enviar(true);},tiempo);
+  }
+  
+  function iniciar(){
+    enviar(false);
+  }
+  iniciar();
+}
+
+//-----
+
+function showStat(){
+  var strHtml;
+  var stat,vstat,i;
+  //Pc0
+  stat = pc0.getStat();
+  strHtml  = "<b>PC0</b><br>";
+  strHtml += "Trafico: "+stat[0]+"<br>";
+  strHtml += "Cola: "+stat[1]+"<br><br>";
+  
+  //Pc1
+  stat = pc1.getStat();
+  strHtml += "<b>PC1</b><br>";
+  strHtml += "Trafico: "+stat[0]+"<br>";
+  strHtml += "Cola: "+stat[1]+"<br><br>";
+  
+  //Sw0
+  vstat = s0.getStat();
+  strHtml += "<b>SW0</b><br>";
+  strHtml += "Trafico <-> Cola<br>";
+  for(i=0;i<8;i++){
+    stat = vstat[i];
+    strHtml += stat[0] + " <-> " + stat[1] + "<br>";
+  }
+  strHtml +="<br>";
+  
+  //Sw1
+  vstat = s1.getStat();
+  strHtml += "<b>SW1</b><br>";
+  strHtml += "Trafico <-> Cola<br>";
+  for(i=0;i<8;i++){
+    stat = vstat[i];
+    strHtml += stat[0] + " <-> " + stat[1] + "<br>";
+  }
+  strHtml +="<br>";
+  
+  //Sw2
+  vstat = s2.getStat();
+  strHtml += "<b>SW2</b><br>";
+  strHtml += "Trafico <-> Cola<br>";
+  for(i=0;i<8;i++){
+    stat = vstat[i];
+    strHtml += stat[0] + " <-> " + stat[1] + "<br>";
+  }
+  strHtml +="<br>";
+  
+  document.getElementById("log").innerHTML = strHtml;
+}
+
+var vecVel = [128000,128000,128000,128000,128000,128000,128000,128000];
+var vecTam = [10000,10000,10000,10000,10000,10000,10000,10000];
+var s0 = new SwitchEthernet(vecVel,vecTam);
+var s1 = new SwitchEthernet(vecVel,vecTam);
+var s2 = new SwitchEthernet(vecVel,vecTam);
+var pc0 = new PC(1,128000,20000);
+var pc1 = new PC(2,128000,20000);
+pc0.conectar(s0,0);
+s0.conectar(7,s1,7);
+s1.conectar(6,s2,7);
+pc1.conectar(s2,0);
+for(var i=0;i<20;i++){
+  pc0.setTarea('ping',2,4000);
+}
+setInterval(function(){showStat();},4000);
+</script>
+</body>
