@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Frame Relay</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+<div id="log"></div>
+<script>
+//tarea
+/*
+  tareaIn = {
+    tipo:'ping',
+    destino:ipDestino,
+    
+    tiempo:1000,//timeout
+    ptoorg:3434,
+  };
+  tareaIn = {
+    tipo:'upload',
+    destino:ipDestino,
+    tamano:tamanoArchivo,
+    
+    tiempo:1000,//timeout
+    ptoorg:3434,
+  }
+  tareaIn = {
+    tipo:'download',
+    destino:ipDestino,
+    tamano:tamanoArchivo,
+    
+    tiempo:1000,//timeout
+    ptoorg:3434,
+  }
+  tareaIn = {
+    tipo:'voip',
+    destino:ipDestino,
+    
+    tiempo:1000,
+    ptoorg:3434,
+  }
+*/
+
+/*
+var trama = {
+  dlci:123,
+  de:0,
+  fecn:0,
+  becn:1,
+  datlng:1000,
+  tmstmp:0,
+  
+  ptoorg:123,
+  ptodst:34232,
+};
+  */
+
+"use strict"
+
+function Mensaje(){
+  var self = this;
+  var vecTmp;
+  var tablero;
+  var reloj;
+  
+  function clean(){
+    if (reloj){
+      clearTimeout(reloj);
+    }
+    var lng = vecTmp.length;
+    var d = new Date();
+    var t = d.getTime();
+    var min = 0;
+    var i;
+    if (lng>0){
+      var vecElem = document.querySelectorAll("div");
+      for (i=0;i<lng;i++){
+        if (vecTmp[i]<=t){
+          tablero.removeChild(vecTmp[i]);
+          vecTmp.splice(i,1);
+          i--;
+          lng--;
+        } else {
+          if (min==0 || min>vecTmp[i]){
+            min = vecTmp[i];
+          }
+        }
+      }
+    }
+    if (lng==0){
+      while (tablero.firstChild) {
+        tablero.removeChild(tablero.firstChild);
+      }
+      tablero.style.display = "none";
+    } else {
+      reloj = setTimeout(clean,min);
+    }
+  }
+  
+  this.put = function(msg,tmp){
+    var newDiv = document.createElement("DIV");
+    newDiv.className = "MensajeTarjeta";
+    var newP = document.createElement("P");
+    newP.innerHTML=msg;
+    newDiv.appendChild(newP);
+    tablero.insertBefore(newnode);
+    
+    var d = new Date();
+    var t = d.getTime();
+    vecTmp.push(t+tmp);
+    tablero.style.display = "block";
+    clean();
+  }
+  
+  function inicio(){
+    vecTmp = [];
+    tablero = document.createElement("DIV");
+    tablero.className = "MensajeTablero";
+    document.body.appendChild(tablero);
+  }
+  inicio();
+}
+
+function SwitchFrameRelay(vecVel){
+  function StreamOut(vel){
+    var self = this;
+    var velocidad = vel/8;
+    var tamano = 10000;
+    var mild = 0.50;
+    var severe = 0.80;
+    var equipo = null;//al que esta conectado al otro extremo
+    var ptodst; //al puerto fisico que esta conectado al otro extremo
+    var cola = [];
+    var trafico = 0; // el trafico que logro enviar
+    var descarte_sevr = 0;
+    var descarte_full = 0;
+    
+    
+    function longitudCola(){
+      var lng = cola.length;
+      var tam = 0;
+      for (var i=0;i<lng;i++){
+        tam += cola[i].datlng;
+      }
+      return tam;
+    }
+    
+    function enviar(){
+      var pqt = cola[0];
+      trafico += pqt.datlng;
+      equipo.push(pqt,ptodst);
+      cola.shift();
+      if (cola.length>0){
+        setTimeout(function(){enviar();},1000*cola[0].datlng/velocidad);
+      }
+    }
+    
+    this.conectar = function(equ,ptdes){
+      equipo=equ;
+      ptodst=ptdes;
+    };
+    
+    this.setParam = function(tam,mil,sev){
+      tamano = tam;
+      mild = mil/100;
+      severe = sev/100;
+    };
+    
+    this.getCongestion = function(){
+      var nivel = longitudCola()/tamano;
+      var res;
+      if (nivel>=severe){
+        res = 2;
+      } else if (nivel>=mild){
+        res = 1;
+      } else {
+        res = 0;
+      }
+      return res;
+    };
+    
+    this.encolar = function(pqt){
+      if (equipo==null){
+        return;
+      }
+      var tam = longitudCola();//tam+pqt.datlng???
+      var nivel = self.getCongestion();
+      
+      if (nivel>=1){
+        pqt.fecn=1;
+      }
+      
+      if (nivel===2){//esta severamente congestionado
+        if (pqt.de==1){
+          descarte_sevr++;
+          pqt=null;//descarta el paquete descartable
+        }
+      }
+      
+      if ((pqt!==null) && (tam + pqt.datlng <= tamano)){
+        //la cola no esta llena
+        cola.push(pqt);
+        if (cola.length==1){
+          var delta = 1000*pqt.datlng/velocidad;
+          setTimeout(function(){enviar();},1000*pqt.datlng/velocidad);
+        }
+      } else {
+        descarte_full++;
+      }
+    };
+    
+    this.getStat = function(){
+      var datos = [];
+      datos[0] = trafico;
+      datos[1] = descarte_sevr;
+      datos[2] = descarte_full;
+      datos[3] = longitudCola();
+      
+      trafico = 0;
+      descarte_sevr = 0;
+      descarte_full = 0;
+      
+      
+      return datos;
+    };
+  }
+  
+  function StreamIn(){
+    var timer = 1;
+    var pvcs = [];
+    var descarte_cac = 0;
+    var cambio_de = 0;
+    
+    this.setParam = function(_timer){
+      timer = _timer;
+    }
+    
+    this.setPVC = function(dlcior,ptdst,dlcidst,br,cir){
+      var lng = pvcs.length;
+      var i,pvc;
+      
+      for (i=0;i<lng;i++){
+        pvc = pvcs[i];
+        if (pvc.dlcior==dlcior){
+          pvc.ptdst = ptdst;
+          pvc.dlcidst = dlcidst;
+          pvc.br = br/8;
+          pvc.cir = cir/8;
+          pvc.burst = timer*br;
+          pvc.conmited = timer*cir;
+          break;
+        }
+      }
+      if (i==lng){
+        pvc = {
+          dlcior:dlcior,
+          ptdst:ptdst,
+          dlcidst:dlcidst,
+          br:br/8,
+          cir:cir/8,
+          burst:timer*br,
+          conmited:timer*cir,
+        }
+        pvcs.push(pvc);
+      }
+    }
+    
+    this.push = function(pqt){
+      var datlng = pqt.datlng;
+      var dlcior = pqt.dlci;
+      var lng = pvcs.length;
+      var i;
+      var ptoDes=-1;//no se conmuta
+      
+      //busco el pvc en base al dlci origen
+      var pvc;
+      for(i=0;i<lng;i++){
+        pvc = pvcs[i];
+        if (pvc.dlcior==dlcior){
+          if (pvc.burst>=datlng){//hay br libre
+            if (pqt.de==0){//si el paquete es vip
+              if (pvc.conmited>=datlng){//hay cir libre
+                pvc.conmited-=datlng;
+              } else {
+                pqt.de=1;
+                cambio_de++;
+              }
+            }
+            pqt.dlci = pvc.dlcidst;
+            pvc.burst -= datlng;
+            ptoDes = pvc.ptdst;
+          } else {
+            descarte_cac++;
+          }
+          break;
+        }
+      }
+      return ptoDes;
+    }
+    
+    this.getStat = function(){
+      var datos = [];
+      datos[0] = descarte_cac;
+      datos[1] = cambio_de;
+      
+      descarte_cac = 0;
+      cambio_de = 0;
+      
+      return datos;
+    };
+    
+    function reset(){
+      var lng = pvcs.length;
+      var i,pvc;
+      for(i=0;i<lng;i++){
+        pvc = pvcs[i];
+        pvc.burst = timer*pvc.br;
+        pvc.conmited = timer*pvc.cir;
+      }
+      setTimeout(reset,timer*1000);
+    }
+    reset();
+  }
+
+  var self=this;
+  var strmIn,strmOut;
+  var cambio_cac
+  
+  this.conectar =function(ptorg,equipo,ptdes){
+    strmOut[ptorg].conectar(equipo,ptdes);
+    equipo.reconectar(ptdes,self,ptorg);
+  };
+  
+  this.reconectar =function(ptorg,equipo,ptdes){
+    strmOut[ptorg].conectar(equipo,ptdes);
+  };
+  
+  this.push = function(pqt,pto){
+    var ptoDest = strmIn[pto].push(pqt);
+    if (ptoDest>=0){
+      var nvlCong = strmOut[pto].getCongestion();
+      if (nvlCong>=1){
+        pqt.becn=1;
+      }
+      strmOut[ptoDest].encolar(pqt);
+    }
+  };
+  
+  this.getStat = function(){
+    var res = [];
+    var i,stin,stou;
+    for (i=0;i<8;i++){
+      stin = strmIn[i].getStat();
+      stou = strmOut[i].getStat();
+      res[i] = stin.concat(stou);
+    }
+    return res;
+  };
+  
+  this.setStream = function(puerto,longitud,mild,severe,timer){
+    strmOut[puerto].setParam(longitud,mild,severe);
+    strmIn[puerto].setParam(timer);
+  };
+  
+  this.setPVC = function(ptorg,dlcior,ptdst,dlcidst,br,cir){
+    strmIn[ptorg].setPVC(dlcior,ptdst,dlcidst,br,cir);
+    strmIn[ptdst].setPVC(dlcidst,ptorg,dlcior,br,cir);
+  };
+  
+  function iniciar(){
+    var i;
+    strmIn=[];
+    strmOut=[];
+    for(i=0;i<8;i++){
+      strmIn[i] = new StreamIn();
+      strmOut[i] = new StreamOut(vecVel[i]);
+    }
+  }
+  iniciar();
+}
+
+function PC(vel,tam){
+  function Puerto(vel,tam){
+    var velocidad = vel/8;
+    var tamano = tam;
+    var equipo = null;
+    var ptodst;
+    var cola = [];
+    var trafico = 0; // el trafico que logro traficar
+    
+    function longitudCola(){
+      var lng = cola.length;
+      var tam = 0;
+      for (var i=0;i<lng;i++){
+        tam += cola[i].datlng;
+      }
+      return tam;
+    }
+    
+    function enviar(){
+      var pqt = cola[0];
+      trafico += pqt.datlng;
+      equipo.push(pqt,ptodst);
+      cola.shift();
+      if (cola.length>0){
+        setTimeout(function(){enviar();},1000*cola[0].datlng/velocidad);
+      }
+    }
+    
+    this.conectar =function(equ,ptdes){
+      equipo=equ;
+      ptodst=ptdes;
+    };
+    
+    this.encolar = function(pqt){
+      if (equipo==null){
+        return;
+      }
+      var tam = longitudCola();
+      if (tam + pqt.datlng <= tamano){
+        //la cola no esta llena
+        cola.push(pqt);
+        if (cola.length==1){
+          var delta = 1000*pqt.datlng/velocidad;
+          setTimeout(function(){enviar();},1000*pqt.datlng/velocidad);
+        }
+      }
+    };
+    
+    this.getStat = function(){
+      var datos = [];
+      datos[0] = trafico;
+      trafico = 0;
+      datos[1] = longitudCola();
+      return datos;
+    };
+  }
+  
+  function Server(pto){
+    var puerto = pto;//fisico donde esta conectado
+    
+    this.push = function(pqt){
+      var d = new Date();
+      var nvoPqt = {
+        dlci:pqt.dlci,
+        de:0,
+        fecn:0,
+        becn:0,
+        datlng:1000,
+        
+        ptoorg:pqt.ptodst,
+        ptodst:pqt.ptoorg,
+        tmstmp:pqt.tmstmp,
+      };
+      switch(pqt.ptodst){
+        case -1://ping
+          nvoPqt.datlng=pqt.datlng;
+          break;
+        case -2://upload
+          nvoPqt.datlng=32;
+          break;
+        case -3://download
+          nvoPqt.datlng=1000;
+          break;
+        default:
+          nvoPqt=null;
+          break;
+      }
+      if (nvoPqt!==null){
+        puerto.encolar(nvoPqt);
+      }
+    };
+  }
+  
+  function Tarea(_tipo,_dlci,_ptorg,_tamano,_puerto){
+    var tipo = _tipo;// si es ping u otro proceso, define el puerto 4 destino que es negativo
+    var dlci = _dlci; //dlci camino
+    var ptorg = _ptorg; //puerto capa 4 origen
+    var puerto = _puerto; // puerto fisico de salida
+    var tamano = _tamano; //tamanho del archivo a ser enviado
+    var tmrEnviar = null;
+    var retardo = 0;
+    var perdido = 0;
+    
+    this.ack = function(pqt){
+      var d = new Date();
+      var delta = (d.getTime()-pqt.tmstmp);
+      retardo = 0.9*retardo + 0.1*delta;
+      switch(tipo){
+        case 'ping':
+          if (delta>=1000){
+            enviar(false);
+          } else {
+            if (tmrEnviar) {
+              clearTimeout(tmrEnviar);
+            }
+            tmrEnviar = setTimeout(function(){enviar(false);},1000-delta);
+          }
+          break;
+        case 'upload':
+        case 'download':
+          tamano-=1000;
+          if (tamano>0){
+            enviar(false);
+          }
+          break;
+      }
+    };
+    
+    this.getStat = function(){
+      var datos = [];
+      datos[0]=perdido;
+      perdido=0;
+      datos[1]=retardo;
+      return datos;
+    }
+  
+    function enviar(tmout){
+      var tiempo; //de timeout
+      var d = new Date();
+      
+      if (tmrEnviar) {
+        clearTimeout(tmrEnviar);
+      }
+      var d = new Date();
+      var nvoPqt = {
+        dlci:dlci,
+        de:0,
+        fecn:0,
+        becn:0,
+        datlng:1000,
+        tmstmp:d.getTime(),
+        
+        ptoorg:ptorg,
+        ptodst:0,
+      };
+      
+      if (tmout){
+        perdido++;
+      }
+      
+      switch(tipo){
+        case 'ping':
+          nvoPqt.datlng=tamano;
+          nvoPqt.ptodst=-1;
+          tiempo = 5000;
+          break;
+        case 'upload':
+          nvoPqt.datlng=1000;
+          nvoPqt.ptodst=-2;
+          tiempo = 3000;
+          break;
+        case 'download':
+          nvoPqt.datlng=32;
+          nvoPqt.ptodst=-3;
+          tiempo = 3000;
+          break;
+        case 'voip':
+          nvoPqt.datlng=200;
+          nvoPqt.ptodst=-4;
+          tiempo = 20;
+          break;
+      }
+      puerto.encolar(nvoPqt);
+      tmrEnviar = setTimeout(function(){enviar(true);},tiempo);
+    }
+    enviar();
+  }
+
+  var self = this;
+  var tareas; //cola de tareas que se le pide al PC que realice
+  var puerto; //el puerto de salida
+  var server; //el server que responde
+  
+  this.conectar = function(equipo,ptdes){
+    puerto.conectar(equipo,ptdes);
+    equipo.reconectar(ptdes,self,0);
+  };
+  
+  this.reconectar = function(equipo,ptdes){
+    puerto.conectar(equipo,ptdes);
+  };
+  
+  this.setTarea = function(_tipo,_destino,_tamano){
+    var lng = tareas.length;
+    var nvaTarea = new Tarea(_tipo,_destino,lng,_tamano,puerto);
+    tareas.push(nvaTarea);
+  };
+
+  this.push = function(pqt,pto){
+    if(pqt.ptodst<0){//es una solicitud de un cliente al otro extremo, respondida por el server local
+      server.push(pqt);
+    } else { //es un acknoledge hacia el cliente local
+      tareas[pqt.ptodst].ack(pqt);
+    }
+  };
+  
+  this.getStat = function(){
+    var datos = puerto.getStat();
+    var lng = tareas.length;
+    var i,res;
+    var prmRet = 0;
+    var sumPer = 0;
+    for (i=0;i<lng;i++){
+      res = tareas[i].getStat();
+      sumPer += res[0];
+      prmRet += res[1];
+    }
+    datos[2] = sumPer;
+    if (lng>0) {
+      datos[3] = prmRet/lng;
+    }  else {
+      datos[3] = 0;
+    }
+    return datos;
+  };
+
+  function iniciar(){
+    puerto = new Puerto(vel,tam);
+    server = new Server(puerto);
+    tareas = [];
+  }
+  iniciar();
+}
+
+//-----
+
+function showStat(){
+  var strHtml;
+  var stat,vstat,i,j,l;
+  
+  //Pc0
+  vstat = pc0.getStat();
+  strHtml  = "<b>PC0</b><br>";
+  strHtml += "Traf; Cola; Per; Ret<br>";
+  l = vstat.length;
+  for(j=0;j<l;j++){
+    strHtml += vstat[j] + "; "
+  }
+  strHtml +="<br>";
+  
+  //Pc1
+ vstat = pc1.getStat();
+  strHtml += "<b>PC1</b><br>";
+  strHtml += "CaC; De; Traf; Svr; Full; Col<br>";
+  l = vstat.length;
+  for(j=0;j<l;j++){
+    strHtml += vstat[j] + "; "
+  }
+  strHtml +="<br>";
+  
+  //Sw0
+  vstat = s0.getStat();
+  strHtml += "<b>SW0</b><br>";
+  strHtml += "CaC; De; Traf; Svr; Full; Col<br>";
+  for(i=0;i<8;i++){
+    stat = vstat[i];
+    l = stat.length;
+    for(j=0;j<l;j++){
+      strHtml += stat[j] + "; "
+    }
+    strHtml +="<br>";
+  }
+  strHtml +="<br>";
+  
+  //Sw1
+  vstat = s1.getStat();
+  strHtml += "<b>SW1</b><br>";
+  strHtml += "CaC; De; Traf; Svr; Full; Col<br>";
+  for(i=0;i<8;i++){
+    stat = vstat[i];
+    l = stat.length;
+    for(j=0;j<l;j++){
+      strHtml += stat[j] + "; "
+    }
+    strHtml +="<br>";
+  }
+  strHtml +="<br>";
+  
+  //Sw2
+  vstat = s2.getStat();
+  strHtml += "<b>SW2</b><br>";
+  strHtml += "CaC; De; Traf; Svr; Full; Col<br>";
+  for(i=0;i<8;i++){
+    stat = vstat[i];
+    l = stat.length;
+    for(j=0;j<l;j++){
+      strHtml += stat[j] + "; "
+    }
+    strHtml +="<br>";
+  }
+  strHtml +="<br>";
+  
+  document.getElementById("log").innerHTML = strHtml;
+}
+
+var vecVel = [128000,128000,128000,128000,128000,128000,128000,128000];
+var s0 = new SwitchFrameRelay(vecVel);
+var s1 = new SwitchFrameRelay(vecVel);
+var s2 = new SwitchFrameRelay(vecVel);
+
+s0.conectar(2,s1,1);
+s0.conectar(1,s2,2);
+s1.conectar(2,s2,1);
+
+var pc0 = new PC(128000,20000);
+var pc1 = new PC(128000,20000);
+
+pc0.conectar(s0,0);
+pc1.conectar(s2,0);
+
+
+s0.setPVC(0,16,2,16,64000,32000);
+s0.setPVC(0,17,1,16,64000,32000);
+s1.setPVC(1,16,2,16,64000,32000);
+s2.setPVC(2,16,0,16,64000,32000);
+s2.setPVC(1,16,0,17,64000,32000);
+
+for(var i=0;i<30;i++){
+  pc0.setTarea('ping',16,4000);
+  pc0.setTarea('ping',17,4000);
+}
+setInterval(function(){showStat();},4000);
+
+</script>
+</body>
