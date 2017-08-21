@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>EthernetSTP</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+<div id="log"></div>
+<script>
+
+"use strict"
+function SwitchEthernet(vecVel,vecTam,_nombre,_macadress){
+	var self=this;
+	var puertos,mactable;
+	var nombre = _nombre;
+	var prioridad=500;
+	var macaddress= _macadress;
+	var root_prioridad=prioridad;
+	var root_macaddress=macaddress;
+	var costo_root=0;
+	
+	function buscarRP(){
+		var lista =[];
+		var i;
+		for(i=0; i<8;i++){
+			if(puertos[i].bpdu_recived){
+				lista[i]={
+					costo:puertos[i].costo,
+					prioridad:puertos[i].bpdu_recived.payload.origen_prio,
+					macaddress:puertos[i].bpdu_recived.payload.origen_mac,
+					pto:i,
+				}
+			}
+		}
+		lista.sort(function(a,b){
+			if(a.costo>b.costo){
+				return 1;
+			}else if(a.costo<b.costo){
+				return -1
+			}else if (a.prioridad>b.prioridad){
+				return 1;
+			}else if (a.prioridad<b.prioridad){
+				return -1;
+			}else if(a.macaddress>b.macaddress){
+				return 1
+			}else if(a.macaddress<b.macaddress){
+				return -1
+			}else if (a.pto>b.pto){
+				return 1
+			}else {
+				return -1
+			}
+		});
+		return lista[0].pto;
+	}
+	
+	function analizarmodo(){
+		var ptoSTP;
+		var nroPto;
+		if(root_macaddress==macaddress){//si el brige root es este switch
+			for(nroPto=0;nroPto<8;nroPto++){//todos los puertos son designados
+				puertos[nroPto].modo="DP";
+				return;
+			}
+		}
+		else{
+			ptoSTP=buscarRP()
+			puertos[ptoSTP].modo="RP";
+			for(nroPto=0;nroPto<8;nroPto++){
+				if(ptoSTP!=nroPto){
+					puertos[nroPto].modo="DP";
+					if(puertos[nroPto].bpdu_recived!=null){
+						if (puertos[nroPto].bpdu_recived.payload.costo<costo_root){
+							puertos[nroPto].modo="block";
+						}
+						else{
+							if (puertos[nroPto].bpdu_recived.payload.origen_prio<prioridad){
+								puertos[nroPto].modo="block";
+							}
+							else if(puertos[nroPto].bpdu_recived.payload.origen_mac < macaddress){
+								puertos[nroPto].modo="block";
+							}
+						}	
+					
+						
+					}
+				}				
+			}
+		}
+		
+	}
+
+	this.setpriority=function(prio){
+		prioridad=prio;
+	};
+	
+	this.setcosto=function(pto,cost){
+		puertos[pto].costo=cost;
+	};
+		  
+	function Puertoethernet(vel,tam){
+		var selfi=this;
+		var velocidad = vel/8;
+		var tamano = tam;
+		var equipo = null;//al que esta conectado al otro extremo
+		var ptodst; //al puerto fisico que esta conectado al otro extremo
+		var cola = [];
+		var trafico = 0; // el trafico que logro traficar
+		this.vlan=1;
+		this.estado="block";//listen, learning, forwarding
+		this.modo="DP";//
+		this.costo=10;
+		this.bpdu_recived=null;
+		var timer1;
+		this.costoacumulado=10;
+		var self=this;
+		
+		
+		this.activar=function(){
+			if(selfi.estado=="block"){
+				setTimeout(self.activar,15000);
+				selfi.estado="listening";
+			}
+			else if(selfi.estado=="listening"){
+				setTimeout(self.activar, 15000);
+				selfi.estado= "learning";
+			}
+			else if(selfi.estado=="learning"){
+				selfi.estado= "forwarding"
+			}
+		};
+		
+		this.analizar=function(pqt){
+			if(timer1){
+				clearTimeout(timer1)
+			}
+			timer1= setTimeout(function(){selfi.estado="block";selfi.modo="block";}, 200000);
+		};
+
+		function longitudCola(){
+			var lng = cola.length;
+			var tam = 0;
+			for (var i=0;i<lng;i++){
+				tam += cola[i].datlng;
+			}
+			return tam;
+		}
+		  
+		function enviar(){
+			var pqt = cola[0];
+			trafico += pqt.datlng;
+			if(!equipo){return;}
+			equipo.push(pqt,ptodst);
+			cola.shift();
+			if (cola.length>0){
+				setTimeout(function(){enviar();},1000*cola[0].datlng/velocidad);
+			}
+		}
+		  
+		this.conectar = function(equ,ptdes){
+			equipo=equ;
+			ptodst=ptdes;
+			selfi.estado="block";
+			selfi.modo="DP";
+			setTimeout(self.activar,2000);
+			
+		};
+		
+		this.desconectar = function(){
+			equipo= null;
+			ptodst= null;
+			selfi.estado="block";
+			selfi.modo="block";
+			bpdu_recived=null;
+		};
+		
+		this.encolar = function(pqt){
+			if (equipo==null || selfi.modo=="block"){
+				return false;
+			}
+			var tam = longitudCola();
+			if (tam + pqt.datlng <= tamano){//la cola no esta llena
+				cola.push(pqt);
+				if (cola.length==1){
+					var delta = 1000*pqt.datlng/velocidad;
+					setTimeout(function(){enviar();},1000*pqt.datlng/velocidad);
+			}
+				return true;
+			} else {
+				return false;
+			}
+		};
+		  
+		this.getStat = function(){
+			var datos = [];
+			datos[0] = trafico;
+			trafico = 0;
+			datos[1] = longitudCola();
+			return datos;
+		}
+	}
+  
+	this.setport= function(pto,tipo,vlanid){
+		if (tipo == 'trunk'){
+			puertos[pto].vlan=-vlanid;
+		}
+		else {
+			puertos[pto].vlan=vlanid;
+		}
+	};
+  
+	this.conectar =function(ptorg,equipo,ptdes){
+		puertos[ptorg].conectar(equipo,ptdes);
+		equipo.reconectar(ptdes,self,ptorg);
+	};
+  
+	this.reconectar =function(ptorg,equipo,ptdes){
+		puertos[ptorg].conectar(equipo,ptdes);
+	};
+  
+	this.push = function(pqt,pto){
+		
+		
+		function aprender(){
+		//determina si la direccion origen ya esta registrada
+		//para registrarla, en caso negativo
+		//o actualuzarla en caso que ya este
+			var pos = mactable.direccion.indexOf(pqt.dirorg);
+			if (pos<0){//no esta en la tabla
+				if (pqt.vlan>=0){//esta tagueado?
+					if (puertos[pto].vlan<0){//es trunk
+						mactable.direccion.push(pqt.dirorg);
+						mactable.puerto.push(pto);
+						mactable.vlan.push(pqt.vlan);
+					}
+					else{//es access
+						pqt=null;//elimina el paquete
+						return;
+					}
+				}
+				else{//no esta tagueado
+					mactable.direccion.push(pqt.dirorg);
+					mactable.puerto.push(pto);
+					if (puertos[pto].vlan<0){//trunk
+						mactable.vlan.push(-puertos[pto].vlan);	
+					}
+					else{//access
+						mactable.vlan.push(puertos[pto].vlan);
+					}
+				}
+			} else {//existe en la tabla
+				if (pqt.vlan>=0){//esta tagueado
+					if (puertos[pto].vlan<0){//si es trunk
+						mactable.direccion[pos]=pqt.dirorg;
+						mactable.puerto[pos]=pto;
+						mactable.vlan[pos]=pqt.vlan;
+					}
+					else{//es access
+						pqt=null;
+						return;
+					}
+				}
+				else{//no esta tagueado
+					mactable.direccion[pos]=pqt.dirorg;
+					mactable.puerto[pos]=pto;
+					if (puertos[pto].vlan<0){//trunk
+						mactable.vlan[pos]=-puertos[pto].vlan;	
+					}
+					else{//access
+						mactable.vlan[pos]=puertos[pto].vlan;
+					}
+				}
+			}
+		}
+		
+		function conmutar(){
+			//determina si la direccion destino ya esta registrada
+		//para enviar directo o broadcast
+		//si no es la misma de entrada
+			var pos = mactable.direccion.indexOf(pqt.dirdst);
+			var ptosal;
+			if (pos>=0){//la mac esta registrada
+				ptosal=mactable.puerto[pos];
+				if(pqt.vlan>=0){//paquete tagueado
+					if(puertos[ptosal].vlan>=0){//si el puerto de salida es access
+						if(puertos[ptosal].vlan==pqt.vlan){//si la vlan del puerto de salida es igual a la vlan del paquete
+							pqt.vlan=-1;//destaguea|
+							puertos[ptosal].encolar(pqt);//envia
+						}
+						else{
+							broadcast();
+						}
+					}
+					else{//puerto de salida trunk
+						if(puertos[ptosal].vlan==-pqt.vlan){//si las vlans nativas del puerto de destino y el paquete son iguales
+							pqt.vlan=-1;//destaguea
+							puertos[ptosal].encolar(pqt);//envia
+						}
+						else{//si las vlan son distintas
+							puertos[ptosal].encolar(pqt);//envia
+						}
+					}
+				}
+				else{//si el paquete esta destagueadp
+					if(puertos[ptosal].vlan>=0){//si el puerto de salida es access
+						if(puertos[ptosal].vlan==puertos[pto].vlan){//si las vlans de los puertos de roigen y destino son iguales
+							puertos[ptosal].encolar(pqt);//envia
+						}
+						else{//las vlans son distintas
+							broadcast();
+						}
+					}
+					else{//puerto de salida trunk
+						if(puertos[ptosal].vlan==puertos[pto].vlan){//si las vlans nativas de los puertos de origen y destino son iguales
+							puertos[ptosal].encolar(pqt);//envia
+						}
+						else{//las vlans son distintas
+							pqt.vlan=puertos[pto].vlan;//taguea con la vlan del puerto de origen
+							puertos[ptosal].encolar(pqt);//envia
+						}
+					}
+				}
+			} 
+			else {      //broadcast
+				broadcast();
+			}
+		}
+		
+		function broadcast(){
+			var nroPto,tam,pqtnvo;
+			
+			for(nroPto=0;nroPto<8;nroPto++){
+				if (nroPto!=pto && puertos[nroPto].modo!="block"){
+					
+					pqtnvo = {
+						dirorg:pqt.dirorg,
+						dirdst:pqt.dirdst,
+						ethertype:pqt.ethertype,
+						vlan:pqt.vlan,
+						ptoorg:pqt.ptoorg,
+						ptodst:pqt.ptodst,
+						payload:pqt.payload,
+						datlng:pqt.datlng,
+					};
+					if (puertos[nroPto].vlan <0 ){//puerto de salida trunk
+						if(pqt.vlan>=0){//el paquete esta taqgueado
+							if (-puertos[nroPto].vlan==pqtnvo.vlan){//si la vlan nativa igual a vlan de paquete	
+								pqtnvo.vlan=-1;
+							}
+							puertos[nroPto].encolar(pqtnvo);
+						}
+						else{//no tagueado
+							if (puertos[pto].vlan>=0){//puerto de origen access
+								pqtnvo.vlan=puertos[pto].vlan;
+							}
+							else{//puerto de origen trunk
+								if(puertos[nroPto].vlan!=puertos[pto].vlan){//diferentes nativas
+									pqtnvo.vlan=-puertos[pto].vlan;//vlan nativa
+								}	
+							}
+							puertos[nroPto].encolar(pqtnvo);
+						}
+					}
+					else{ //puerto se salida access
+						if (pqtnvo.vlan>=0){//el paquete esta tagueado
+							if (puertos[nroPto].vlan==pqtnvo.vlan){//la vlan del puerto es igual a la vlan del paquete
+								pqtnvo.vlan=-1;//destaguea
+								puertos[nroPto].encolar(pqtnvo);
+							}
+							
+						}
+						else{//no tagueado
+							if(puertos[pto].vlan>=0){//puerto de origen access
+								if(puertos[nroPto].vlan==puertos[pto].vlan){
+									puertos[nroPto].encolar(pqtnvo);
+								}
+							}
+							else{//puerto de origen trunk
+								if(puertos[nroPto].vlan==-puertos[pto].vlan){//vlan nativa igual a vlan de access
+									puertos[nroPto].encolar(pqtnvo);
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		
+		function Configurar_STP(){
+			
+		}
+		
+		function MiCosto(){
+			var i;
+			var min=-1;
+			for(i=0;i<8;i++){
+				if(puertos[i].bpdu_recived){
+					if (min == -1){
+						min = puertos[i].bpdu_recived.payload.costo + puertos[i].costo;
+					}
+					else if(puertos[i].bpdu_recived.payload.costo < min){
+						min = puertos[i].bpdu_recived.payload.costo + puertos[i].costo;
+					}
+				}
+			}
+			return min;
+		}
+		
+		function STP_process(){
+			puertos[pto].costoacumulado=pqt.payload.costo+puertos[pto].costo;
+			costo_root=MiCosto();
+			puertos[pto].analizar(pqt);
+			puertos[pto].bpdu_recived=pqt;
+			if(pqt.payload.root_prio<root_prioridad){//prioirdad del switch de origen es mayor
+				root_prioridad=pqt.payload.root_prio;
+				root_macaddress=pqt.payload.root_mac;
+			}
+			if(pqt.payload.root_prio==root_prioridad){////mac del switch de origen es mmayor
+				if(pqt.payload.root_mac<root_macaddress){
+					root_prioridad=pqt.payload.root_prio;
+					root_macaddress=pqt.payload.root_mac;
+				}
+			}
+			analizarmodo();
+			
+		}
+	
+		if(pqt.dirdst==999999){//paquete a multicast
+			if(pqt.ethertype==42){//paquete es BPDU
+				
+				STP_process();
+				return;
+			}
+		}
+		if(puertos[pto].modo=="block"){
+			console.log(macaddress+" "+pto+" "+"block");
+			return;
+		}else if(puertos[pto].estado=="learning"){
+			console.log(macaddress+" "+pto+" "+"learning");
+			aprender();
+		}else if(puertos[pto].estado=="forwarding"){
+			console.log(macaddress+" "+pto+" "+"forwarding");
+			aprender();
+			conmutar();
+		}
+	  };
+  
+	this.getStat = function(){
+    var res = [];
+    var i;
+    for (i=0;i<8;i++){
+      res[i] = puertos[i].getStat();
+    }
+    return res;
+  }
+	function stp_hello(){
+		var payloadbpdu,pqtnvo;
+		var nroPto;
+		for(nroPto=0;nroPto<8;nroPto++){
+			payloadbpdu = {
+				root_mac:root_macaddress,
+				root_prio:root_prioridad,
+				origen_mac:macaddress,
+				origen_prio:prioridad,
+				costo:costo_root,
+				datlng:18,
+			};
+			pqtnvo = {
+				dirorg:macaddress,
+				dirdst:999999,
+				ethertype:42,
+				payload:payloadbpdu,
+				datlng:16+payloadbpdu.datlng,
+			};
+			puertos[nroPto].encolar(pqtnvo);
+		} 
+	}
+  
+	function iniciar(){
+		var i;
+		puertos=[];
+		
+		for(i=0;i<8;i++){
+			puertos[i] = new Puertoethernet(vecVel[i],vecTam[i]);
+		}
+
+		mactable={
+			direccion:[],
+			puerto:[],
+			vlan:[],
+		};
+		setInterval(stp_hello,2000);
+		
+		//setTimeout(f_block(),200000);
+	}
+	iniciar();
+}
+function PC(dir,vel,tam){
+	var self = this;
+	var tareas; //cola de tareas que se le pide al PC que realice
+	var puerto; //el puerto de salida
+	var server; //el server que responde
+  
+	function Puerto(vel,tam){
+		var selfi=this;
+		var velocidad = vel/8;
+		var tamano = tam;
+		var equipo = null;//al que esta conectado al otro extremo
+		var ptodst; //al puerto fisico que esta conectado al otro extremo
+		var cola = [];
+		var trafico = 0; // el trafico que logro traficar
+		var dir_IP;
+		this.direccion=0;//direccion ethernet
+  
+		function longitudCola(){
+			var lng = cola.length;
+			var tam = 0;
+			for (var i=0;i<lng;i++){
+				tam += cola[i].datlng;
+			}
+			return tam;
+		}
+  
+		function enviar(){
+			var pqt = cola[0];
+			trafico += pqt.datlng;
+			equipo.push(pqt,ptodst);
+			cola.shift();
+			if (cola.length>0){
+				setTimeout(function(){enviar();},1000*cola[0].datlng/velocidad);
+			}
+		}
+  
+		this.conectar = function(equ,ptdes){
+			equipo=equ;
+			ptodst=ptdes;
+		};
+  
+		this.encolar = function(pqt){
+			if (equipo==null){
+				return false;
+			}
+			var tam = longitudCola();
+			
+			if (tam + pqt.datlng <= tamano){//la cola no esta llena
+				pqt.dirorg=selfi.direccion;
+				cola.push(pqt);
+				if (cola.length==1){
+				
+					var delta = 1000*pqt.datlng/velocidad;
+						
+					setTimeout(function(){enviar();},1000*pqt.datlng/velocidad);
+				}
+				return true;
+			} else {
+				return false;
+			}
+		};
+  
+		this.getStat = function(){
+			var datos = [];
+			datos[0] = trafico;
+			trafico = 0;
+			datos[1] = longitudCola();
+			return datos;
+		}
+	}
+  
+  
+	this.conectar = function(equipo,ptdes){
+		puerto.conectar(equipo,ptdes);
+		equipo.reconectar(ptdes,self,0);
+	};
+  
+	this.reconectar = function(equipo,ptdes){
+		puerto.conectar(equipo,ptdes);
+	};
+  
+	this.setTarea = function(_tipo,_destino,_tamano){
+		var lng = tareas.length;
+		var nvaTarea = new Tarea(_tipo,_destino,lng+1000,_tamano,puerto);
+		tareas.push(nvaTarea);
+	};
+	this.push = function(pqt,pto){
+		if(pqt.dirdst==puerto.direccion){
+			if(pqt.payload.pto_dst<1000){//es una solicitud de un cliente al otro extremo, respondida por el server local
+				server.push(pqt);
+			} else { //es un acknoledge hacia el cliente local
+				tareas[pqt.payload.pto_dst-1000].ack(pqt);
+			}
+		}
+	};
+  
+	this.getStat = function(){
+		return puerto.getStat();
+	};
+	function iniciar(){
+		puerto = new Puerto(vel,tam);
+		server = new Server(puerto);
+		tareas = [];
+		puerto.direccion=dir;
+	}
+	iniciar();
+}
+function Server(pto){
+  var puerto = pto;//f�sico donde esta conectado
+  
+  this.push = function(pqt){
+    var d = new Date();
+	var payload = {
+		pto_origen:pqt.payload.pto_dst,
+		pto_dst:pqt.payload.pto_origen,
+		datlng:pqt.payload.datlng,
+	};
+	var nvoPqt = {
+		dirorg:0,
+		dirdst:pqt.dirorg,
+		ethertype:800,
+		payload:payload,
+		datlng:16+payload.datlng,
+	};
+    if (nvoPqt!==null){
+      puerto.encolar(nvoPqt);
+    }
+  };
+}
+function Tarea(_tipo,_destino,_ptorg,_tamano,_puerto){
+  var tipo = _tipo;// si es ping u otro proceso, define el puerto 4 destino que es negativo
+  var destino = _destino; //ethernet destino
+
+  var ptorg = _ptorg; //puerto capa 4 origen
+  var puerto = _puerto; // puerto fisico de salida
+  var tamano = _tamano; //tamanho del archivo a ser enviado
+  var tmrEnviar = null;
+  
+  this.ack = function(pqt){
+    var d = new Date();
+    switch(tipo){
+      case 'ping':
+        var delta = (d.getTime()-pqt.tmstmp);
+        if (delta>=1000){
+          enviar(false);
+        } else {
+          if (tmrEnviar) {
+            clearTimeout(tmrEnviar);
+          }
+          tmrEnviar = setTimeout(function(){enviar(false);},1000-delta);
+        }
+        break;
+      case 'upload':
+      case 'download':
+        tamano-=1000;
+        if (tamano>0){
+          enviar(false);
+        }
+        break;
+    }
+  };
+  function enviar(timeout){
+    var tiempo; //de timeout
+    
+    if (tmrEnviar) {
+      clearTimeout(tmrEnviar);
+    }
+    var d = new Date();
+	
+	var payload = {
+		pto_origen:ptorg,
+		pto_dst:1,
+		datlng:4+tamano,
+	};
+	var nvoPqt = {
+		dirorg:0,
+		dirdst:destino,
+		ethertype:800,
+		payload:payload,
+		datlng:16+payload.datlng,
+	};
+    switch(tipo){
+      case 'ping':
+        nvoPqt.payload.pto_dst=1;
+        tiempo = 5000;
+        break;
+      case 'upload':
+		nvoPqt.payload.pto_dst=2;
+        tiempo = 3000;
+        break;
+      case 'download':
+        nvoPqt.payload.pto_dst=3;
+        tiempo = 3000;
+        break;
+      case 'voip':
+		nvoPqt.payload.pto_dst=4;
+        tiempo = 20;
+        break;
+    }
+    puerto.encolar(nvoPqt);
+    tmrEnviar = setTimeout(function(){enviar(true);},tiempo);
+  }
+  
+  function iniciar(){
+    enviar(false);
+  }
+  iniciar();
+}
+function ARP(ip_){
+	var tabla=[];
+	var ip_local=ip_;
+	function pedirdireccion(ip){
+		
+	}
+	
+	this.push=function (pqt){
+		if (pqt.payload.ipdestino==ip_local){
+			var pqtrespuesta={
+				
+			};
+		}
+	};
+	this.getEthernet=function (ip){
+		var longitudtabla= tabla.length;
+		var pos;
+		for(pos=0; pos<longitudtabla; pos++){
+			if(tabla[pos].ip==ip){
+				return tabla[pos].ethernet;
+			}
+		}
+		pedirdireccion(ip);
+		return null;
+	};
+}
+//-----
+
+function showStat(){
+
+  var strHtml;
+  var stat,vstat,i;
+  //Pc0
+  stat = pc0.getStat();
+  strHtml  = "<b>PC0</b><br>";
+  strHtml += "Trafico: "+stat[0]+"<br>";
+  strHtml += "Cola: "+stat[1]+"<br><br>";
+  
+  //Pc1
+  stat = pc1.getStat();
+  strHtml += "<b>PC1</b><br>";
+  strHtml += "Trafico: "+stat[0]+"<br>";
+  strHtml += "Cola: "+stat[1]+"<br><br>";
+  
+  //Pc2
+  stat = pc2.getStat();
+  strHtml += "<b>PC2</b><br>";
+  strHtml += "Trafico: "+stat[0]+"<br>";
+  strHtml += "Cola: "+stat[1]+"<br><br>";
+  
+  //Pc3
+  stat = pc3.getStat();
+  strHtml += "<b>PC3</b><br>";
+  strHtml += "Trafico: "+stat[0]+"<br>";
+  strHtml += "Cola: "+stat[1]+"<br><br>";
+  
+  //Pc4
+  stat = pc4.getStat();
+  strHtml += "<b>PC4</b><br>";
+  strHtml += "Trafico: "+stat[0]+"<br>";
+  strHtml += "Cola: "+stat[1]+"<br><br>";
+  
+  //Pc5
+  stat = pc5.getStat();
+  strHtml += "<b>PC5</b><br>";
+  strHtml += "Trafico: "+stat[0]+"<br>";
+  strHtml += "Cola: "+stat[1]+"<br><br>";
+  
+  //Pc6
+  stat = pc6.getStat();
+  strHtml += "<b>PC6</b><br>";
+  strHtml += "Trafico: "+stat[0]+"<br>";
+  strHtml += "Cola: "+stat[1]+"<br><br>";
+  
+  //Sw0
+  vstat = s0.getStat();
+  strHtml += "<b>SW0</b><br>";
+  strHtml += "Trafico <-> Cola<br>";
+  for(i=0;i<8;i++){
+    stat = vstat[i];
+    strHtml += stat[0] + " <-> " + stat[1] + "<br>";
+  }
+  strHtml +="<br>";
+  
+  //Sw1
+  vstat = s1.getStat();
+  strHtml += "<b>SW1</b><br>";
+  strHtml += "Trafico <-> Cola<br>";
+  for(i=0;i<8;i++){
+    stat = vstat[i];
+    strHtml += stat[0] + " <-> " + stat[1] + "<br>";
+  }
+  strHtml +="<br>";
+  
+  //Sw2
+  vstat = s2.getStat();
+  strHtml += "<b>SW2</b><br>";
+  strHtml += "Trafico <-> Cola<br>";
+  for(i=0;i<8;i++){
+    stat = vstat[i];
+    strHtml += stat[0] + " <-> " + stat[1] + "<br>";
+  }
+  strHtml +="<br>";
+  
+  document.getElementById("log").innerHTML = strHtml;
+}
+var vecVel = [128000,128000,128000,128000,128000,128000,128000,128000];
+var vecTam = [10000,10000,10000,10000,10000,10000,10000,10000];
+var s0 = new SwitchEthernet(vecVel,vecTam,"s0",10);
+var s1 = new SwitchEthernet(vecVel,vecTam,"s1",11);
+var s2 = new SwitchEthernet(vecVel,vecTam,"s2",12);
+s0.setport(0,'trunk',5);
+s0.setport(2,'access',2);
+s0.setport(3,'access',3);
+s0.setport(4,'access',3);
+s1.setport(0,'trunk',5);
+s1.setport(1,'trunk',5);
+s1.setport(2,'access',2);
+s1.setport(3,'access',3);
+s2.setport(1,'trunk',5);
+s2.setport(2,'access',2);
+s2.setport(3,'access',3);
+s0.setport(7,'trunk',5);
+s2.setport(7,'trunk',5);
+var pc0 = new PC(0,128000,20000);
+var pc1 = new PC(1,128000,20000);
+var pc2 = new PC(2,128000,20000);
+var pc3 = new PC(3,128000,20000);
+var pc4 = new PC(4,128000,20000);
+var pc5 = new PC(5,128000,20000);
+var pc6 = new PC(6,128000,20000);
+pc0.conectar(s0,2);
+pc1.conectar(s0,3);
+pc2.conectar(s1,2);
+pc3.conectar(s1,3);
+pc4.conectar(s0,4);
+pc5.conectar(s2,2);
+pc6.conectar(s2,3);
+s0.conectar(0,s1,0);
+s2.conectar(1,s1,1);
+s0.conectar(7,s2,7);
+
+
+//for(var i=0;i<20;i++){
+  pc1.setTarea('ping',6,4000);
+//}
+
+
+setInterval(function(){showStat();},4000);
+</script>
+</body>
+</html>
