@@ -1,3 +1,5 @@
+"use strict";
+
 /*
 TRAMA ETHERNET
 {
@@ -7,7 +9,6 @@ TRAMA ETHERNET
     payload: {},
     datlng:234 //tamaño total de la trama
 }
-
 PAQUETE ARP REQUEST
 {
     htype: 1,
@@ -19,7 +20,6 @@ PAQUETE ARP REQUEST
     tpa: ip remoto,
     datlng: 26,
 }
-
 PAQUETE ARP REPLY
 {
     htype: 1,
@@ -32,8 +32,6 @@ PAQUETE ARP REPLY
     datlng: 26,
 };
 */
-
-"use strict"
 
 var MACs = (function(){
     var usadas = ['FF.FF.FF.FF.FF.FF'];
@@ -72,7 +70,7 @@ function ARP(){
     function buscarEther(ip){
         //busca en la tabla cual es la direccion ethernet de la ip dada
         //si no la encuentra en la tabla, retorna null
-        var lng = tabla;
+        var lng = tabla.length;
         var i;
         var ether = null;
         for(i=0;i<lng;i++){
@@ -85,7 +83,7 @@ function ARP(){
     }
     function buscarPos(ip){
         //busca en la tabla cual es la posicion donde esta la ip dada
-        var lng = tabla;
+        var lng = tabla.length;
         var i;
         var pos = -1;
         for(i=0;i<lng;i++){
@@ -99,7 +97,7 @@ function ARP(){
     this.getEther = function(ip,prt){
         //busca en la tabla la direccion ethernet de esa ip
         //prt, es el puerto por donde hará la consulta a la Red
-        var ether = buscar(ip);
+        var ether = buscarEther(ip);
         if (ether === null){
             //Si no la encuentra, hace una solicitud ARP por la red
             //utilizando el puerto
@@ -140,7 +138,7 @@ function ARP(){
             tabla.push(obj);
         }
     
-        //responde, si es esta ip local y es Request
+        //responde, si esta es la ip local y es Request
         if (arprqst.tpa === prt.ip && arprqst.operation === "Request"){
             var arprply = {
                 htype: 1,
@@ -167,8 +165,7 @@ function ARP(){
 function PuertoOut(){
     var velocidad = 16000; //bytes por segundo
     var tamano = 10000; //del buffer en bytes
-    var equipo = null; //al que esta conectado al otro extremo
-    var ptodst = 0; //al puerto fisico que esta conectado al otro extremo
+    var ptodst = null; //al puerto fisico que esta conectado al otro extremo
     var cola = [];
     var trafico = 0; // contador trafico que logro traficar
   
@@ -185,7 +182,7 @@ function PuertoOut(){
     function enviar(){
         var pqt = cola[0];
         trafico += pqt.datlng;
-        equipo.push(pqt,ptodst);
+        ptodst.push(pqt,ptodst);
         cola.shift();
         if (cola.length>0){
             setTimeout(enviar,1000*cola[0].datlng/velocidad);
@@ -200,13 +197,12 @@ function PuertoOut(){
         tamano = lngbuf;
     };
     
-    this.conectar = function(equ,ptdes){
-        equipo = equ;
+    this.conectar = function(ptdes){
         ptodst = ptdes;
     };
   
     this.encolar = function(pqt){
-        if (equipo === null){
+        if (ptodst === null){
             return false;
         }
         var tam = longitudCola();
@@ -230,47 +226,62 @@ function PuertoOut(){
     };
 }
 
-function PuertoEthernet(cb){
-    PuertoOut.call(this);
-    var self = this;
-    var direccion = MACs.get();
+function PuertoIn(cb){
     var callback = cb;
-    this.recibir = function(frame){
-        callback(frame,self);
+    this.push = function(frame){
+        callback(frame);
     };
 }
 
-function PC(tam){
-    // tam del buffer de salida
-    var puerto = new PuertoEthernet(servicio);
-    puerto.setVelocidad(10000000);
-    var pings = [];
-    var arpmanager = new ARP();
+function PuertoEthernet(cb){
+    var puertoent = new PuertoIn(cb);
+    var puertosal = new PuertoOut();
+    this.direccion = MACs.get();
+    this.send = puertosal.encolar;
+    this.conectar = puertosal.conectar;
+    this.getPuerto = function(){
+        return puertoent;
+    };
+}
 
-    function icmpmanager(pqt,prt){
-        var trama = JSON.parse(pqt.payload);
-        if (trama.type==='Request'){
-            var icmp = {
-                type:'Replay',
-                timestamp:trama.timestamp,
-                tamanho:trama.tamanho,
-            };
-            var paqueteip = {
-                origen:puerto.ip,
-                destino:pqt.origen,
-                protocolo:'ICMP',
-                payload:JSON.stringify(icmp),
-                tamanho:icmp.tamanho+20,
-            };
-            enviar(paqueteip);
-        } else {//Replay
-            var ahora = Date.now();
-            console.log("PC="+puerto.ip+". From "+pqt.origen+"; " +trama.tamanho+" bytes; time="+Math.floor(ahora-trama.timestamp) +' ms');
+function Consola(){
+    var funcb = null;
+    var consolog = [];
+    this.push = function(str){
+        console.log(str);
+        consolog.push(str);
+        if (consolog.length>20){
+            consolog.shift();
+        }
+        if (funcb){
+            funcb(consolog);
+        }
+    };
+}
+
+function PC(){
+    var puerto = new PuertoEthernet(l2manager);
+    var consola = new Consola();
+    var pings = [];
+    
+    
+    var arpmanager = new ARP();
+    
+    function l2manager(frame){
+        if (frame.destino === puerto.direccion || frame.destino === 'FF.FF.FF.FF.FF.FF'){
+            switch(frame.ethertype){
+                case '0800'://IP
+                    ipmanager(frame.payload,puerto);
+                    break;
+                case '0806'://ARP
+                    arpmanager.push(frame.payload,puerto);
+                    break;
+            }
         }
     }
   
     function ipmanager(pqt,prt){
-        if (pqt.destino!==prt.ip){
+        if (pqt.destino !== prt.ip){
             return;
         }
         switch(pqt.protocolo){
@@ -279,11 +290,34 @@ function PC(tam){
                 break;
         }
     }
+    
+    function icmpmanager(pqt,prt){
+        var trama = pqt.payload;
+        if (trama.type==='Request'){
+            var icmp = {
+                type:'Replay',
+                timestamp:trama.timestamp,
+                datlng:trama.datlng,
+            };
+            var paqueteip = {
+                origen:puerto.ip,
+                destino:pqt.origen,
+                protocolo:'ICMP',
+                payload:icmp,
+                datlng:icmp.datlng + 20,
+            };
+            enviarip(paqueteip);
+        } else {//Replay
+            var ahora = Date.now();
+            var str = "From: "+pqt.origen+"; " +trama.datlng+" bytes; time="+Math.floor(ahora-trama.timestamp) + " ms"
+            consola.push(str);
+        }
+    }
 
-    function enviar(paquete){
+    function enviarip(paquete){
         var i,otroip;
         var ipdest = paquete.destino;
-        if (enmired(ipdest,puerto)){
+        if (enmired(ipdest)){
             otroip = ipdest;
         } else {
             otroip = puerto.nexthop;
@@ -294,21 +328,21 @@ function PC(tam){
                 destino:macdest,
                 origen:puerto.direccion,
                 ethertype:'0800',
-                payload:JSON.stringify(paquete),
-                tamanho:paquete.tamanho+18,
+                payload:paquete,
+                datlng:paquete.datlng+18,
             };
             puerto.send(frame);
         }
     }
 
-    function enmired(dir,prto){
+    function enmired(dir){
         var vdir = dir.split('.');
-        var vmip = prto.ip.split('.');
-        var vmsk = prto.mascara.split('.');
+        var vmip = puerto.ip.split('.');
+        var vmsk = puerto.mascara.split('.');
         var res1,res2;
         var i;
         var res = true;
-        for (i=0;i<4;i++){
+        for (i=0;i<4;i++){//enmascarar direccion
             res1 = parseInt(vdir[i],10) & parseInt(vmsk[i],10);
             res2 = parseInt(vmip[i],10) & parseInt(vmsk[i],10);
             if (res1!==res2){
@@ -339,7 +373,7 @@ function PC(tam){
                 payload:icmp,
                 datlng:icmp.datlng+20,
             };
-            enviar(paqueteip);
+            enviarip(paqueteip);
         },1000);
         pings.push(ref);
     }
@@ -353,22 +387,23 @@ function PC(tam){
         pings = [];
     };
   
-    this.getPuerto = function(){
-        return puerto;
-    };
-  
-    function servicio(frame,pto){
-        if (frame.destino === pto.direccion || frame.destino === 'FF.FF.FF.FF.FF.FF'){
-            switch(frame.ethertype){
-                case '0800'://IP
-                    ipmanager(frame.payload,pto);
-                    break;
-                case '0806'://ARP
-                    arpmanager.push(JSON.parse(frame.payload),pto);
-                    break;
-            }
-        }
-    };
+    this.conectar = function(ptdes){
+        puerto.conectar(ptdes);
+    }
+    
+    this.getPuerto = puerto.getPuerto;
 }
 
 
+//----------------------
+
+var pc1 = new PC();
+pc1.setPuerto('192.168.0.2','255.255.255.0','192.168.0.1');
+
+var pc2 = new PC();
+pc2.setPuerto('192.168.0.3','255.255.255.0','192.168.0.1');
+
+pc1.conectar(pc2.getPuerto());
+pc2.conectar(pc1.getPuerto());
+
+pc1.ping("192.168.0.3",100);
